@@ -1,0 +1,105 @@
+{
+  "_comment": "This JSON file contains parameters for the SNU668 rK Selection Experiments. Modify values as needed.",
+  "database": {
+    "_comment": "Database connection queries for retrieving passaging and media data. Update these if your data source changes.",
+    "queries": {
+      "passaging_query": "SELECT id, cellLine, event, passaged_from_id1, passage, date, correctedCount, cellCount, areaOccupied_um2, cellSize_um2, media FROM Passaging",
+      "media_query": "SELECT * from Media"
+    }
+  },
+  "filters": [
+    {
+      "_comment": "Define filter ranges for seeding lineages. Specify 'first' and 'last' seed IDs along with grouping labels.",
+      "ranges": [
+        {
+          "first": "SUM-159_NLS_4N_O1_A1_seed",
+          "last": "SUM-159_NLS_4N_O1_A22_seed",
+          "label": "4N",
+          "label2": "starvation\nline 1"
+        },
+        {
+          "first": "SUM-159_NLS_4N_O2_A1_seed",
+          "last": "SUM-159_NLS_4N_O2_A22_seed",
+          "label": "4N",
+          "label2": "starvation\nline 2"
+        },
+        {
+          "first": "SUM-159_NLS_4N_C_A1_seed",
+          "last": "SUM-159_NLS_4N_C_A12_seed",
+          "label": "4N",
+          "label2": "control"
+        },
+	{
+          "first": "SUM-159_NLS_2N_O1_A1_seed",
+          "last": "SUM-159_NLS_2N_O1_A23_seed",
+          "label": "2N",
+          "label2": "starvation\nline 1"
+        },
+        {
+          "first": "SUM-159_NLS_2N_O2_A1_seed",
+          "last": "SUM-159_NLS_2N_O2_A23_seed",
+          "label": "2N",
+          "label2": "starvation\nline 2"
+        },
+        {
+          "first": "SUM-159_NLS_2N_C_A1_seed",
+          "last": "SUM-159_NLS_2N_C_A12_seed",
+          "label": "2N",
+          "label2": "control"
+        }        
+      ]
+    }
+  ],
+  "manual_filters": [
+    {
+      "key": "id",
+      "values": [
+	"HGC-27_P1_A4_harvesT4000",        
+	"HGC-27_P2_A4_harvesT4000",
+	"HGC-27_P1_A5_seed",
+	"HGC-27_P1_A5_harvesT1",
+	"HGC-27_P1_A5_harvesT2",	
+	"HGC-27_P1_A5_harvesT3",
+	"HGC-27_P1_A5_harvesT4",
+	"HGC-27_P1_A5_harvesT5",
+	"HGC-27_P2_A5_seed",
+	"HGC-27_P2_A5_harvesT1",
+	"HGC-27_P2_A5_harvesT2",	
+	"HGC-27_P2_A5_harvesT3",
+	"HGC-27_P2_A5_harvesT4",
+	"HGC-27_P2_A5_harvesT5"
+      ]
+    }
+  ],
+  "plotting": {
+    "_comment": "Plotting configuration. Update the options below to customize plot appearance, including colors, titles, axis labels, and faceting. Also set the output path for saving the plot.",
+    "color_by": "oxygen_pct",
+    "make_growth_curves": true,
+    "make_generation_barplot": true,
+    "make_passage_vs_growth": false,
+    "output_path": "~/Downloads/SUM159_4N_0_final.png",
+    "titles": {
+      "_comment": "Define titles for different experimental conditions. These will appear on the plots.",
+      "O": "Oxygen Deprivation",
+      "control": "Parental Control Lineage",
+      "passage_vs_growth": "Growth Rate Across Passages"
+    },
+    "axis_labels": {
+      "_comment": "Axis labels for the plots. Update these to change the x-axis and y-axis labels.",
+      "x_label": "Days After Seeding",
+      "y_label_cellcount": "Cell Count",
+      "y_label_growth": "Growth Rate (day⁻¹)",
+      "passage_label": ""
+    },
+    "facet_grid": {
+      "_comment": "Faceting options for splitting plots. 'rows' and 'cols' determine the grid layout, while 'scales' sets axis scaling behavior.",
+      "rows": "label_value",
+      "cols": "adjPass",
+      "scales": "free"
+    }
+  },
+  "database_settings": {
+    "_comment": "Database settings. Set disconnect_on_completion to true to close the database connection after processing.",
+    "disconnect_on_completion": true
+  }
+}

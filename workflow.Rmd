@@ -1,0 +1,137 @@
+---
+title: "testing"
+output: html_document
+date: "2025-08-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/4473331/Documents/projects/021_IMO25/ploidyOxygen")
+```
+
+```{r}
+source("code/db_utils.R")
+```
+
+
+```{r}
+cloneIds <- c("SUM159_NLS_2N_O1_A7K_harvest", "SUM159_NLS_2N_O2_A7K_harvest", "SUM-159_NLS_2N_A7M_K_harvest",
+                "SUM-159_NLS_4N_O2_A17_seedT1", "SUM159_NLS_4N_O2_A7K_harvest", "SUM159_NLS_4N_O1_A7K_harvest",
+                "SUM-159_NLS_4N_A5M_K_harvest", "SUM-159_NLS_4N_O1_A17_seedT1", "SUM-159_NLS_2N_O2_A19_seed",  
+                "SUM-159_NLS_2N_O1_A19_seed",   "SUM-159_NLS_2N_MRCA_harvest") 
+
+karyotypes <- get_karyotyping(cloneIds)
+
+```
+
+Mapping all the data onto cloneID passages:
+
+```{r}
+  require(DBI)
+  require(RMariaDB)
+  dbvars <- load_db_vars("db_creds.txt")
+  db <- dbConnect(
+    MariaDB(),
+    host = dbvars["HOST"],
+    user = dbvars["USER"],
+    password = dbvars["PASSWORD"],
+    dbname = dbvars["DBNAME"]
+  )
+
+x <- dbGetQuery(db, "SELECT * FROM Passaging")
+m <- dbGetQuery(db, "SELECT * FROM Media")
+
+config <- jsonlite::fromJSON("data/parametersO2.json",  flatten = FALSE, simplifyVector = FALSE)
+filters <- config$filters[[1]]$ranges  # Read filter ranges
+
+
+
+## -- Process each filter entry
+db_ids <- lapply(seq_along(filters), function(i) recover_lineage(filters[[i]], x))
+df     <- do.call(rbind, db_ids)
+
+gaps_2N <- fill_lineage_gaps("_2N_",df,x)
+gaps_4N <- fill_lineage_gaps("_4N_",df,x)
+
+gaps_df <- rbind(gaps_2N,gaps_4N)
+gaps_df$g <- NaN
+gaps_df$sublabel_value <- "linker"
+gaps_df$adjPass <- NaN
+lineage_df <- rbind(df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g","sublabel_value")],
+                    gaps_df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g","sublabel_value")])
+
+lineage_df$imaged <- lineage_df$id%in%df$id
+lineage_df$karyotyped <- lineage_df$id%in%cloneIds
+lineage_df$passage_id <- lineage_df$id
+lineage_df$passage_id[lineage_df$event=="harvest"] <- lineage_df$passaged_from_id1[lineage_df$event=="harvest"]
+lut1 <- lineage_df$passage_id
+names(lut1) <- lineage_df$id
+lineage_df$passage_from <- lut1[lineage_df$passaged_from_id1]
+
+tmp <- split(lineage_df,f=lineage_df$passage_id)
+lineage_df <- do.call(rbind,lapply(tmp,function(ti){
+  imaged <- sum(ti$imaged)>0
+  karyotyped <- sum(ti$karyotyped)>0
+  if(nrow(ti)>1) ti <- ti[ti$event=="seeding",]
+  ti$imaged <- imaged
+  ti$karyotyped <- karyotyped
+  ti
+}))
+
+ff <- list.files("data/flow/Hypoxia_SUM159/")
+ff <- ff[!grepl("Control",ff)] ## no passage ID for controls.
+fmap <- gsub("Sample_","",ff)
+fmap <- gsub("SUM159","SUM-159_NLS",fmap)
+fmap <- gsub(".fcs","",fmap)
+
+has_flow <- do.call(cbind,lapply(fmap,function(fi) grepl(fi,lineage_df$passage_id)))
+has_flow <- rowSums(has_flow)>0
+
+print(paste("matched",sum(has_flow),"passages, expected:",length(ff)))
+
+lineage_df$has_flow <- has_flow
+
+```
+
+
+
+
+```{r}
+p2N <- experiment_lineage_plot(lineage_df[lineage_df$label_value=="2N",])
+p4N <- experiment_lineage_plot(lineage_df[lineage_df$label_value=="4N",])
+p2N
+p4N
+```
+
+
+
+
+```{r}
+library(flowCore)
+
+ff <- list.files("data/flow/Hypoxia_SUM159/")
+
+res <- lapply(ff,function(fi){
+  print(fi)
+  dfi <- read.FCS(file.path("data/flow/Hypoxia_SUM159",fi))
+  kwi <- keyword(dfi)[c(c("$DATE","$BTIM","$CYT","CYTNUM","CYTOMETER CONFIG NAME","THRESHOLD","APPLY COMPENSATION","SPILL","$P11V","$P11R","$P11E","P11DISPLAY")
+)]
+  dfi <- data.frame(dfi@exprs)
+  id <- gsub("Sample_","",fi)
+  id <- gsub(".fcs","",fi)
+  dfi$id <- id
+  list(df=dfi,kw=kwi)
+})
+
+df <- do.call(rbind,lapply(res,"[[","df"))
+kw <- do.call(rbind,lapply(res,"[[","kw"))
+
+p <- ggplot(df,aes(x=X450.Violet.C.A))+
+  facet_wrap(~id,scales="free")+
+  geom_histogram(binwidth=400)
+p
+
+
+
+
+```
+
