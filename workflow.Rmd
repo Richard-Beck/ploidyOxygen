@@ -187,7 +187,6 @@ bind_rows(binned_list, .id = "id") %>%
 ```
 
 ```{r}
-
 reassign_karyotyping <- function(passageid,g){
   if(!is.na(g$g[g$passage_id==passageid])) return(passageid)
   passagefrom <- g$passage_from[g$passage_id==passageid]
@@ -198,46 +197,79 @@ reassign_karyotyping <- function(passageid,g){
   return(passagefrom)
 }
 
-find_ancestors <- function(passage_id,g){
-  ids <- c(passage_id)
-  passage_from <- g$passage_from[g$passage_id==passage_id]  
-  while(!is.na(passage_from)){
-    passage_id <- passage_from
-    passage_from <- g$passage_from[g$passage_id==passage_id]
-    ids <- c(passage_id,ids)
-  }
-  return(ids)
-}
+g <- lineage_df
+
+karyotyped_ids <- g$passage_id[g$karyotyped]
+names(karyotyped_ids) <- sapply(karyotyped_ids,reassign_karyotyping,g=g)
+
+g$karyotyped <- g$passage_id%in%names(karyotyped_ids)
 
 
-lineage_tails <- lineage_df$passage_id[!lineage_df$passage_id%in%lineage_df$passage_from & !is.na(lineage_df$g)]
-karyotyped_ids <- lineage_df$passage_id[lineage_df$karyotyped]
-names(karyotyped_ids) <- sapply(karyotyped_ids,reassign_karyotyping,g=lineage_df)
-
-lapply(lineage_tails,function(li){
-  tmp <- lineage_df[lineage_df$passage_id%in%find_ancestors(li,g=lineage_df),]
-tmp$karyotyped <- tmp$passage_id%in%names(karyotyped_ids)
-tmp <- tmp[order(tmp$passage),]
-fit_obj <- lapply(1:nrow(tmp),function(i){
-  
-  g <- tmp$g[i]
+fit_data <- lapply(1:nrow(g),function(i){
+  gr <- g$g[i]
   flow <- NULL
-  if(tmp$has_flow[i]){
-    ix <- which(sapply(names(binned_list),function(j) grepl(j,tmp$passage_id[i])))
+  if(g$has_flow[i]){
+    ix <- which(sapply(names(binned_list),function(j) grepl(j,g$passage_id[i])))
     flow <- binned_list[[ix]]
   } 
   kary <- NULL
-  if(tmp$karyotyped[i]){
-    mapped_id <- karyotyped_ids[tmp$passage_id[i]]
+  if(g$karyotyped[i]){
+    mapped_id <- karyotyped_ids[g$passage_id[i]]
     samples <- do.call(rbind,karyotypes$karyotype[karyotypes$passage_id==mapped_id])
     kary <- rowMeans(samples)
   }
   
-  list(g=g,flow=flow,kary=kary)
-})
-saveRDS(fit_obj,file.path("data/fit_objects/",paste0(li,".Rds")))
+  list(g=gr,flow=flow,kary=kary)
 })
 
+names(fit_data) <- g$passage_id
+saveRDS(fit_data,"data/fit_objects/fit_data.Rds")
+```
 
+
+How to use this sim_jobs table:
+
+Iterate through sim_jobs row by row (they are sorted by depth).
+
+Load the saved state corresponding to parent_key (if NA, start from scratch).
+
+Run the simulation for the specified oxygen.
+
+Save the resulting state to a file named after sim_key.
+
+```{r}
+
+get_sim_jobs <- function(df, ploidy) {
+  g <- df[df$label_value == ploidy, c("passage_id", "passage_from", "oxygen")]
+  parents <- setNames(g$passage_from, g$passage_id)
+  oxygens <- setNames(g$oxygen, g$passage_id)
+
+  get_history <- function(id) {
+    pid <- parents[id]
+    # Stop if parent is NA (true root) or not in current subset (new sub-root)
+    if (is.na(pid) || !pid %in% names(parents)) return(as.character(oxygens[id]))
+    paste(get_history(pid), oxygens[id], sep = "_")
+  }
+
+  g$sim_key    <- sapply(g$passage_id, get_history)
+  g$parent_key <- g$sim_key[match(g$passage_from, g$passage_id)]
+
+  # Unique transitions
+  sim_jobs <- unique(g[, c("parent_key", "oxygen", "sim_key")])
+  
+  # Organize
+  sim_jobs$depth    <- stringr::str_count(sim_jobs$sim_key, "_")
+  sim_jobs          <- sim_jobs[order(sim_jobs$depth), ]
+  sim_jobs$data_ids <- split(g$passage_id, g$sim_key)[sim_jobs$sim_key]
+  
+  rownames(sim_jobs) <- NULL
+  return(sim_jobs)
+}
+
+# Generate jobs
+jobs_2N <- get_sim_jobs(lineage_df, "2N")
+saveRDS(jobs_2N,"data/fit_objects/jobs_2N.Rds")
+jobs_4N <- get_sim_jobs(lineage_df, "4N")
+saveRDS(jobs_4N,"data/fit_objects/jobs_4N.Rds")
 ```
 
