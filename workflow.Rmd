@@ -10,20 +10,8 @@ knitr::opts_knit$set(root.dir = "C:/Users/4473331/Documents/projects/021_IMO25/p
 
 ```{r}
 source("code/db_utils.R")
+source("code/plot_utils.R")
 ```
-
-
-```{r}
-cloneIds <- c("SUM159_NLS_2N_O1_A7K_harvest", "SUM159_NLS_2N_O2_A7K_harvest", "SUM-159_NLS_2N_A7M_K_harvest",
-                "SUM-159_NLS_4N_O2_A17_seedT1", "SUM159_NLS_4N_O2_A7K_harvest", "SUM159_NLS_4N_O1_A7K_harvest",
-                "SUM-159_NLS_4N_A5M_K_harvest", "SUM-159_NLS_4N_O1_A17_seedT1", "SUM-159_NLS_2N_O2_A19_seed",  
-                "SUM-159_NLS_2N_O1_A19_seed",   "SUM-159_NLS_2N_MRCA_harvest") 
-
-karyotypes <- get_karyotyping(cloneIds)
-
-```
-
-Mapping all the data onto cloneID passages:
 
 ```{r}
   require(DBI)
@@ -39,6 +27,34 @@ Mapping all the data onto cloneID passages:
 
 x <- dbGetQuery(db, "SELECT * FROM Passaging")
 m <- dbGetQuery(db, "SELECT * FROM Media")
+```
+
+
+```{r}
+cloneIds <- c("SUM159_NLS_2N_O1_A7K_harvest", "SUM159_NLS_2N_O2_A7K_harvest", "SUM-159_NLS_2N_A7M_K_harvest",
+                "SUM-159_NLS_4N_O2_A17_seedT1", "SUM159_NLS_4N_O2_A7K_harvest", "SUM159_NLS_4N_O1_A7K_harvest",
+                "SUM-159_NLS_4N_A5M_K_harvest", "SUM-159_NLS_4N_O1_A17_seedT1", "SUM-159_NLS_2N_O2_A19_seed",  
+                "SUM-159_NLS_2N_O1_A19_seed",   "SUM-159_NLS_2N_MRCA_harvest") 
+
+karyotypes <- get_karyotyping(cloneIds)
+
+lut <-  sapply(cloneIds,function(ii){
+  if(x$event[x$id==ii]=="seeding") return(ii)
+  return(x$passaged_from_id1[x$id==ii])
+})
+
+names(lut) <- cloneIds
+karyotypes$passage_id <- lut[karyotypes$id]
+
+```
+
+Mapping all the data onto cloneID passages:
+
+```{r}
+
+
+lut_o2 <- m$oxygen_pct
+names(lut_o2) <- paste0("x",m$id) 
 
 config <- jsonlite::fromJSON("data/parametersO2.json",  flatten = FALSE, simplifyVector = FALSE)
 filters <- config$filters[[1]]$ranges  # Read filter ranges
@@ -56,8 +72,8 @@ gaps_df <- rbind(gaps_2N,gaps_4N)
 gaps_df$g <- NaN
 gaps_df$sublabel_value <- "linker"
 gaps_df$adjPass <- NaN
-lineage_df <- rbind(df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g","sublabel_value")],
-                    gaps_df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g","sublabel_value")])
+lineage_df <- rbind(df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g","sublabel_value","media")],
+                    gaps_df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g","sublabel_value","media")])
 
 lineage_df$imaged <- lineage_df$id%in%df$id
 lineage_df$karyotyped <- lineage_df$id%in%cloneIds
@@ -89,6 +105,7 @@ has_flow <- rowSums(has_flow)>0
 print(paste("matched",sum(has_flow),"passages, expected:",length(ff)))
 
 lineage_df$has_flow <- has_flow
+lineage_df$oxygen <- lut_o2[paste0("x",lineage_df$media)]
 
 ```
 
@@ -105,32 +122,121 @@ p4N
 
 
 
+
+
 ```{r}
 library(flowCore)
+library(tidyverse)
 
-ff <- list.files("data/flow/Hypoxia_SUM159/")
+path <- "data/flow/Hypoxia_SUM159/"
+ff <- list.files(path)
 
-res <- lapply(ff,function(fi){
-  print(fi)
-  dfi <- read.FCS(file.path("data/flow/Hypoxia_SUM159",fi))
-  kwi <- keyword(dfi)[c(c("$DATE","$BTIM","$CYT","CYTNUM","CYTOMETER CONFIG NAME","THRESHOLD","APPLY COMPENSATION","SPILL","$P11V","$P11R","$P11E","P11DISPLAY")
-)]
-  dfi <- data.frame(dfi@exprs)
-  id <- gsub("Sample_","",fi)
-  id <- gsub(".fcs","",fi)
-  dfi$id <- id
-  list(df=dfi,kw=kwi)
+# Define naming map
+fmap <- gsub("Sample_", "", ff)
+fmap <- gsub("SUM159", "SUM-159_NLS", fmap)
+fmap <- gsub(".fcs", "", fmap)
+names(fmap) <- ff
+
+# Global binning parameters
+n_bins <- 512
+max_fluo <- 250000 # Adjust this based on your observed max DNA signal
+
+binned_list <- lapply(ff, function(fi) {
+  message(paste("Processing:", fmap[fi]))
+  
+  # Load and convert
+  fcs <- read.FCS(file.path(path, fi))
+  dfi <- as.data.frame(exprs(fcs))
+  colnames(dfi) <- make.names(colnames(dfi))
+  
+  # 1. Clean (Trash + Doublets)
+  dfi <- dfi[dfi$X450.Violet.C.A > 25000 & dfi$X450.Violet.C.A < max_fluo, ]
+  ratio <- dfi$X450.Violet.C.A / dfi$X450.Violet.C.H
+  dfi <- dfi[ratio > (median(ratio) - 2*sd(ratio)) & 
+             ratio < (median(ratio) + 2*sd(ratio)), ]
+  
+  # 2. Bin Data
+  # Create a sequence of breaks for the histogram
+  breaks <- seq(0, max_fluo, length.out = n_bins + 1)
+  counts <- hist(dfi$X450.Violet.C.A, breaks = breaks, plot = FALSE)$counts
+  bin_mids <- (breaks[-1] + breaks[-length(breaks)]) / 2
+  
+  # Return binned representation
+  data.frame(
+    dna_channel = bin_mids,
+    count = counts,
+    density = counts / sum(counts)
+  )
 })
 
-df <- do.call(rbind,lapply(res,"[[","df"))
-kw <- do.call(rbind,lapply(res,"[[","kw"))
+# Name the list by your fmap IDs
+names(binned_list) <- fmap
 
-p <- ggplot(df,aes(x=X450.Violet.C.A))+
-  facet_wrap(~id,scales="free")+
-  geom_histogram(binwidth=400)
-p
+# --- Verification ---
+# You can quickly look at one sample:
+# plot(binned_list[[1]]$dna_channel, binned_list[[1]]$density, type="l")
+
+# Or plot all to check scaling
+bind_rows(binned_list, .id = "id") %>%
+  ggplot(aes(x = dna_channel, y = density)) +
+  facet_wrap(~id, scales = "free_y") +
+  geom_line(color = "firebrick") +
+  theme_minimal() +
+  labs(x = "DNA Content (Binned Area)", y = "Relative Frequency")
+
+```
+
+```{r}
+
+reassign_karyotyping <- function(passageid,g){
+  if(!is.na(g$g[g$passage_id==passageid])) return(passageid)
+  passagefrom <- g$passage_from[g$passage_id==passageid]
+  while(sum(g$passage_from==passagefrom & !is.na(g$passage_from))<2 & passageid!=passagefrom){
+    passageid <- passagefrom
+    passagefrom <- g$passage_id[g$passage_id==passagefrom]
+  }
+  return(passagefrom)
+}
+
+find_ancestors <- function(passage_id,g){
+  ids <- c(passage_id)
+  passage_from <- g$passage_from[g$passage_id==passage_id]  
+  while(!is.na(passage_from)){
+    passage_id <- passage_from
+    passage_from <- g$passage_from[g$passage_id==passage_id]
+    ids <- c(passage_id,ids)
+  }
+  return(ids)
+}
 
 
+lineage_tails <- lineage_df$passage_id[!lineage_df$passage_id%in%lineage_df$passage_from & !is.na(lineage_df$g)]
+karyotyped_ids <- lineage_df$passage_id[lineage_df$karyotyped]
+names(karyotyped_ids) <- sapply(karyotyped_ids,reassign_karyotyping,g=lineage_df)
+
+lapply(lineage_tails,function(li){
+  tmp <- lineage_df[lineage_df$passage_id%in%find_ancestors(li,g=lineage_df),]
+tmp$karyotyped <- tmp$passage_id%in%names(karyotyped_ids)
+tmp <- tmp[order(tmp$passage),]
+fit_obj <- lapply(1:nrow(tmp),function(i){
+  
+  g <- tmp$g[i]
+  flow <- NULL
+  if(tmp$has_flow[i]){
+    ix <- which(sapply(names(binned_list),function(j) grepl(j,tmp$passage_id[i])))
+    flow <- binned_list[[ix]]
+  } 
+  kary <- NULL
+  if(tmp$karyotyped[i]){
+    mapped_id <- karyotyped_ids[tmp$passage_id[i]]
+    samples <- do.call(rbind,karyotypes$karyotype[karyotypes$passage_id==mapped_id])
+    kary <- rowMeans(samples)
+  }
+  
+  list(g=g,flow=flow,kary=kary)
+})
+saveRDS(fit_obj,file.path("data/fit_objects/",paste0(li,".Rds")))
+})
 
 
 ```
