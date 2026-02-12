@@ -273,3 +273,265 @@ jobs_4N <- get_sim_jobs(lineage_df, "4N")
 saveRDS(jobs_4N,"data/fit_objects/jobs_4N.Rds")
 ```
 
+
+```{r}
+
+
+run_sim_jobs_in_memory <- function(theta, sim_jobs, fit_data, parnames,
+                                   start_N = 44L,
+                                   grid = list(N_min = 22L, N_max = 200L, N_unit = 22L),
+                                   stop_at = list(time = 60, size = 64),
+                                   sd_g = 0.15,
+                                   keep_states = FALSE,
+                                   eps = 1e-16) {
+
+  ll_g <- function(g_obs, g_model, sd_g) {
+    if (is.null(g_obs) || length(g_obs) == 0L) return(0)
+    if (!is.finite(g_obs)) return(0)
+    dnorm(g_obs, mean = g_model, sd = sd_g, log = TRUE)
+  }
+
+  ll_kary <- function(kary_obs, dist_df, N_unit, eps) {
+    if (is.null(kary_obs) || length(kary_obs) == 0L) return(0)
+    kary_obs <- kary_obs[is.finite(kary_obs)]
+    if (!length(kary_obs)) return(0)
+
+    p_by_N <- dist_df$fraction
+    names(p_by_N) <- as.character(dist_df$N)
+
+    N_hat <- as.integer(round(kary_obs * N_unit))
+    N_hat <- pmax(min(dist_df$N), pmin(max(dist_df$N), N_hat)) # clamp
+    sum(log(p_by_N[as.character(N_hat)] + eps))
+  }
+
+  ll_flow <- function(flow_obs, model_res) 0
+
+  ll_one_id <- function(dat, model_res) {
+    ll_g(dat$g, model_res$growth_rate, sd_g) +
+      ll_flow(dat$flow, model_res) +
+      ll_kary(dat$kary, model_res$distribution, grid$N_unit, eps)
+  }
+  theta <- exp(theta)
+  theta <- as.list(theta)
+  names(theta) <- parnames
+  
+  states <- if (keep_states) vector("list", nrow(sim_jobs)) else NULL
+  if (keep_states) names(states) <- sim_jobs$sim_key
+
+  ll_by_job <- numeric(nrow(sim_jobs))
+  names(ll_by_job) <- sim_jobs$sim_key
+  ll_total <- 0
+
+  # optionally cache only u_vec for parents when not keeping full states
+  u_cache <- if (!keep_states) vector("list", nrow(sim_jobs)) else NULL
+  if (!keep_states) names(u_cache) <- sim_jobs$sim_key
+
+  for (i in seq_len(nrow(sim_jobs))) {
+    job <- sim_jobs[i, ]
+    sim_key    <- job$sim_key
+    parent_key <- job$parent_key
+    O          <- job$oxygen
+
+    start_u <- NULL
+    if (!is.na(parent_key)) {
+      if (keep_states) {
+        if (is.null(states[[parent_key]])) stop("Parent state not available: ", parent_key)
+        start_u <- states[[parent_key]]$u_vec
+      } else {
+        if (is.null(u_cache[[parent_key]])) stop("Parent state not available: ", parent_key)
+        start_u <- u_cache[[parent_key]]
+      }
+    }
+
+    res <- run_ploidy_model(
+      O = O, theta = theta,
+      start_N = start_N,
+      start_u = start_u,
+      grid = grid,
+      stop_at = stop_at
+    )
+
+    # score all data_ids mapped to this sim_key
+    ids <- job$data_ids[[1]]
+    ll_i <- 0
+    for (pid in ids) {
+      dat <- fit_data[[pid]]
+      ll_i <- ll_i + ll_one_id(dat, res)
+    }
+
+    ll_by_job[i] <- ll_i
+    ll_total <- ll_total + ll_i
+
+    if (keep_states) {
+      states[[sim_key]] <- res
+    } else {
+      u_cache[[sim_key]] <- res$u_vec
+    }
+  }
+  
+  out <- -ll_total
+  print(unlist(theta))
+  print(out)
+  if (keep_states) {
+    out <- list(ll = ll_total, ll_by_job = ll_by_job)
+    attr(states, "data_ids") <- setNames(sim_jobs$data_ids, sim_jobs$sim_key)
+    out$states <- states
+  }
+  out
+}
+
+
+source("models/buffering.R")
+
+theta <- list(
+  p_misseg = 0.003,
+  p_wgd    = 1e-4,
+  beta     = 0.8,
+  n_exp    = 2,
+  smax     = 0.9,
+  k_o      = 2.5,
+  lam_max  = log(2)/1,
+  lam_min = 0.1# ~0.6931 / day  (≈1-day doubling)
+)
+
+
+fit_data <- readRDS("data/fit_objects/fit_data.Rds")
+jobs_2N <- readRDS("data/fit_objects/jobs_2N.Rds")
+#states_2N <- run_sim_jobs_in_memory(theta, jobs_2N, fit_data = fit_data)
+
+res <- optim(log(unlist(theta)),run_sim_jobs_in_memory,sim_jobs=jobs_2N, fit_data = fit_data,parnames=names(theta))
+
+
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# ---- helper: make per-passage mapping ----
+make_passage_map <- function(sim_jobs) {
+  # sim_jobs has list-column data_ids; expand to one row per passage_id
+  do.call(rbind, lapply(seq_len(nrow(sim_jobs)), function(i){
+    data.frame(
+      sim_key = sim_jobs$sim_key[i],
+      parent_key = sim_jobs$parent_key[i],
+      oxygen = sim_jobs$oxygen[i],
+      depth = sim_jobs$depth[i],
+      passage_id = sim_jobs$data_ids[[i]],
+      stringsAsFactors = FALSE
+    )
+  }))
+}
+
+# ---- helper: bin observed kary to model grid bins ----
+bin_kary_to_grid <- function(kary, N_unit) round(kary * N_unit) / N_unit
+
+# ---- build plotting data from states + fit_data ----
+build_fit_viz_data <- function(states, sim_jobs, fit_data, N_unit = 22L) {
+  pm <- make_passage_map(sim_jobs)
+
+  # predicted growth per sim_key
+  pred_g <- data.frame(
+    sim_key = names(states),
+    pred_g = sapply(states, `[[`, "growth_rate"),
+    stringsAsFactors = FALSE
+  )
+
+  pm <- pm %>% left_join(pred_g, by="sim_key") %>%
+    mutate(passage_idx = depth + 1L)  # "time" proxy: position in the oxygen-history chain
+
+  # observed growth per passage_id
+  pm$obs_g <- sapply(pm$passage_id, function(pid) {
+    x <- fit_data[[pid]]$g
+    if (is.null(x) || length(x)==0L || !is.finite(x)) NA_real_ else as.numeric(x)
+  })
+
+  # predicted ploidy distribution per passage_id (project to kary = N/N_unit)
+  pred_ploidy <- do.call(rbind, lapply(seq_len(nrow(pm)), function(i){
+    key <- pm$sim_key[i]
+    dist <- states[[key]]$distribution
+    data.frame(
+      passage_id = pm$passage_id[i],
+      passage_idx = pm$passage_idx[i],
+      sim_key = key,
+      kary_bin = dist$N / N_unit,
+      pred_frac = dist$fraction,
+      stringsAsFactors = FALSE
+    )
+  }))
+
+  # observed kary per passage_id -> binned -> fraction
+  obs_ploidy <- do.call(rbind, lapply(pm$passage_id, function(pid){
+    k <- fit_data[[pid]]$kary
+    if (is.null(k)) return(NULL)
+    k <- k[is.finite(k)]
+    if (!length(k)) return(NULL)
+    kb <- bin_kary_to_grid(k, N_unit)
+    tab <- as.data.frame(table(kb), stringsAsFactors = FALSE)
+    colnames(tab) <- c("kary_bin","n")
+    tab$kary_bin <- as.numeric(tab$kary_bin)
+    tab$obs_frac <- tab$n / sum(tab$n)
+    tab$passage_id <- pid
+    tab
+  }))
+
+  list(pm = pm, pred_ploidy = pred_ploidy, obs_ploidy = obs_ploidy)
+}
+
+# ---- plotting ----
+plot_ploidy_fit <- function(pred_ploidy, obs_ploidy) {
+  # merge on bins; missing bins -> 0
+  df <- full_join(pred_ploidy, obs_ploidy, by=c("passage_id","kary_bin")) %>%
+    mutate(pred_frac = replace_na(pred_frac, 0),
+           obs_frac  = replace_na(obs_frac, 0)) %>%
+    distinct(passage_id, kary_bin, .keep_all = TRUE)
+
+  # order facets by passage_idx if present
+  if ("passage_idx" %in% names(df)) {
+    ord <- df %>%
+  group_by(passage_id) %>%
+  summarise(passage_idx = first(passage_idx), .groups="drop") %>%
+  arrange(passage_idx)
+
+  df$passage_id <- factor(df$passage_id, levels = ord$passage_id)
+
+  }
+
+  ggplot(df, aes(x = kary_bin)) +
+    geom_col(aes(y = obs_frac), alpha = 0.35) +
+    geom_line(aes(y = pred_frac), linewidth = 0.6) +
+    facet_wrap(~ passage_id, scales = "free_y") +
+    labs(x = "Ploidy (N / N_unit)", y = "Fraction (observed bars, predicted line)") +
+    theme_bw()
+}
+
+plot_growth_fit <- function(pm) {
+  df <- pm %>% filter(is.finite(obs_g), is.finite(pred_g)) %>%
+    arrange(passage_idx)
+
+  ggplot(df, aes(x = passage_idx)) +
+    geom_point(aes(y = obs_g)) +
+    geom_line(aes(y = pred_g)) +
+    labs(x = "Passage index (from sim_key depth)", y = "Growth rate (1/day)") +
+    theme_bw()
+}
+
+# =========================
+# Usage
+# =========================
+# 1) run with keep_states=TRUE so we have distributions for plotting
+ out <- run_sim_jobs_in_memory(log(unlist(theta)), jobs_2N, fit_data, keep_states=TRUE,parnames=names(theta))
+ states <- out$states
+
+# 2) build viz data
+ viz <- build_fit_viz_data(states, jobs_2N, fit_data, N_unit = 22L)
+
+# 3) plots
+ p_ploidy <- plot_ploidy_fit(viz$pred_ploidy, viz$obs_ploidy)
+ p_growth <- plot_growth_fit(viz$pm)
+# p_ploidy
+# p_growth
+
+```
+

@@ -26,7 +26,8 @@ run_ploidy_model <- function(O, theta,
   
   # 1. Fitness: Constant across N, Michaelis-Menten function of O
   # lambda = lam_max * O / (O + k_o)
-  lambda_val <- theta$lam_max * (O / (O + theta$k_o))
+  lambda_val <- theta$lam_min + (theta$lam_max - theta$lam_min) * (O / (O + theta$k_o))
+  p_misseg <- theta$p_misseg*(1-(O / (O + theta$k_o)))
   lambda_vec <- rep(lambda_val, length(N_GRID))
   
   # 2. Transition Matrix B Build
@@ -59,7 +60,7 @@ run_ploidy_model <- function(O, theta,
   
   for (j in seq_along(N_GRID)) {
     N <- N_GRID[j]
-    weights <- .get_delta_weights(N, theta$p_misseg, theta$beta, theta$n_exp, theta$smax, grid$N_unit)
+    weights <- .get_delta_weights(N, p_misseg, theta$beta, theta$n_exp, theta$smax, grid$N_unit)
     ts <- as.integer(names(weights)); pr <- as.numeric(weights)
     
     for (idx in seq_along(ts)) {
