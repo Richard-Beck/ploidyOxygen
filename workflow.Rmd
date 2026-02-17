@@ -5,7 +5,7 @@ date: "2025-08-18"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_knit$set(root.dir = "C:/Users/4473331/Documents/projects/021_IMO25/ploidyOxygen")
+knitr::opts_knit$set(root.dir = "C:/Users/4473331/Documents/projects/021_ltee_models/ploidyOxygen/")
 ```
 
 ```{r}
@@ -284,54 +284,85 @@ run_sim_jobs_in_memory <- function(theta, sim_jobs, fit_data, parnames,
                                    sd_g = 0.15,
                                    keep_states = FALSE,
                                    eps = 1e-16) {
-
+  
+  # --- Likelihood Helpers ---
   ll_g <- function(g_obs, g_model, sd_g) {
     if (is.null(g_obs) || length(g_obs) == 0L) return(0)
     if (!is.finite(g_obs)) return(0)
     dnorm(g_obs, mean = g_model, sd = sd_g, log = TRUE)
   }
-
+  
   ll_kary <- function(kary_obs, dist_df, N_unit, eps) {
     if (is.null(kary_obs) || length(kary_obs) == 0L) return(0)
     kary_obs <- kary_obs[is.finite(kary_obs)]
     if (!length(kary_obs)) return(0)
-
+    
     p_by_N <- dist_df$fraction
     names(p_by_N) <- as.character(dist_df$N)
-
+    
     N_hat <- as.integer(round(kary_obs * N_unit))
     N_hat <- pmax(min(dist_df$N), pmin(max(dist_df$N), N_hat)) # clamp
     sum(log(p_by_N[as.character(N_hat)] + eps))
   }
-
+  
   ll_flow <- function(flow_obs, model_res) 0
-
+  
   ll_one_id <- function(dat, model_res) {
     ll_g(dat$g, model_res$growth_rate, sd_g) +
       ll_flow(dat$flow, model_res) +
       ll_kary(dat$kary, model_res$distribution, grid$N_unit, eps)
   }
-  theta <- exp(theta)
-  theta <- as.list(theta)
-  names(theta) <- parnames
   
+  # --- 1. Parameter Transformation ---
+  theta_vals <- exp(theta)
+  theta_list <- as.list(theta_vals)
+  names(theta_list) <- parnames
+  
+  # --- 2. PRE-CALCULATION CACHE ---
+  # Identify all unique oxygen levels in the job list
+  unique_O <- unique(sim_jobs$oxygen)
+  system_cache <- vector("list", length(unique_O))
+  names(system_cache) <- as.character(unique_O)
+  
+  # Loop once per unique condition to build Q matrices
+  for(o_lvl in unique_O) {
+    # Build Physics
+    sys <- build_transition_matrix(o_lvl, theta_list, grid)
+    
+    # Pre-calculate Rate Matrix Q = lambda * (B - I)
+    I_mat <- diag(nrow(sys$B))
+    Q_mat <- sys$lambda * (sys$B - I_mat)
+    
+    # Store minimal needed data for run_ploidy_model
+    system_cache[[as.character(o_lvl)]] <- list(
+      Q = Q_mat,
+      grid = sys$grid,
+      lambda = sys$lambda,
+      B = sys$B # Keep B if we ever need to fallback to desolve
+    )
+  }
+  
+  # --- 3. Simulation Loop ---
   states <- if (keep_states) vector("list", nrow(sim_jobs)) else NULL
   if (keep_states) names(states) <- sim_jobs$sim_key
-
+  
   ll_by_job <- numeric(nrow(sim_jobs))
   names(ll_by_job) <- sim_jobs$sim_key
   ll_total <- 0
-
-  # optionally cache only u_vec for parents when not keeping full states
+  
+  # Cache only u_vec for parents when not keeping full states
   u_cache <- if (!keep_states) vector("list", nrow(sim_jobs)) else NULL
   if (!keep_states) names(u_cache) <- sim_jobs$sim_key
-
+  
   for (i in seq_len(nrow(sim_jobs))) {
     job <- sim_jobs[i, ]
     sim_key    <- job$sim_key
     parent_key <- job$parent_key
     O          <- job$oxygen
-
+    
+    # Retrieve Pre-built System
+    cached_sys <- system_cache[[as.character(O)]]
+    
     start_u <- NULL
     if (!is.na(parent_key)) {
       if (keep_states) {
@@ -342,26 +373,40 @@ run_sim_jobs_in_memory <- function(theta, sim_jobs, fit_data, parnames,
         start_u <- u_cache[[parent_key]]
       }
     }
+    
+    # Pass 'cached_sys' to skip rebuilding matrix
+res <- tryCatch({
+      run_ploidy_model(
+        O = O, theta = theta_list,
+        start_N = start_N,
+        start_u = start_u,
+        grid = grid,
+        stop_at = stop_at,
+        method = "expm",
+        cached_system = cached_sys
+      )
+    }, error = function(e) {
+      # Optional: Print error to see what happened (uncomment if debugging)
+      # message(sprintf("Job %s failed: %s", sim_key, e$message))
+      return(NULL) # Sentinel for failure
+    })
 
-    res <- run_ploidy_model(
-      O = O, theta = theta,
-      start_N = start_N,
-      start_u = start_u,
-      grid = grid,
-      stop_at = stop_at
-    )
-
-    # score all data_ids mapped to this sim_key
+    # If simulation crashed, abort immediately and return huge penalty
+    if (is.null(res)) {
+      return(1e12) # Large positive value (since we minimize negative LL)
+    }
+    
+    # Score Data
     ids <- job$data_ids[[1]]
     ll_i <- 0
     for (pid in ids) {
       dat <- fit_data[[pid]]
       ll_i <- ll_i + ll_one_id(dat, res)
     }
-
+    
     ll_by_job[i] <- ll_i
     ll_total <- ll_total + ll_i
-
+    
     if (keep_states) {
       states[[sim_key]] <- res
     } else {
@@ -370,8 +415,11 @@ run_sim_jobs_in_memory <- function(theta, sim_jobs, fit_data, parnames,
   }
   
   out <- -ll_total
-  print(unlist(theta))
-  print(out)
+  
+  # Optional: Print for monitoring
+   print(unlist(theta_list))
+   print(out)
+  
   if (keep_states) {
     out <- list(ll = ll_total, ll_by_job = ll_by_job)
     attr(states, "data_ids") <- setNames(sim_jobs$data_ids, sim_jobs$sim_key)
@@ -403,6 +451,229 @@ res <- optim(log(unlist(theta)),run_sim_jobs_in_memory,sim_jobs=jobs_2N, fit_dat
 
 
 ```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# ============================================================
+# 1. HELPERS & BUILDER
+# ============================================================
+
+make_passage_map <- function(sim_jobs) {
+  # Expand list-column 'data_ids' so we have one row per observation
+  do.call(rbind, lapply(seq_len(nrow(sim_jobs)), function(i){
+    data.frame(
+      sim_key    = sim_jobs$sim_key[i],
+      parent_key = sim_jobs$parent_key[i],
+      oxygen     = sim_jobs$oxygen[i],
+      depth      = sim_jobs$depth[i],
+      passage_id = sim_jobs$data_ids[[i]], 
+      stringsAsFactors = FALSE
+    )
+  }))
+}
+
+build_fit_viz_data <- function(states, sim_jobs, fit_data, N_unit = 22L) {
+  
+  # --- A. Merge Metadata with Model Results ---
+  pm <- make_passage_map(sim_jobs)
+  
+  # Extract predicted growth rates
+  pred_g_df <- data.frame(
+    sim_key = names(states),
+    pred_g  = sapply(states, function(x) if(is.null(x)) NA_real_ else x$growth_rate),
+    stringsAsFactors = FALSE
+  )
+  
+  # Master Dataframe for Growth Plot
+  # Note: This may have multiple rows per sim_key (one per data point)
+  growth_df <- pm %>% 
+    left_join(pred_g_df, by = "sim_key") %>%
+    mutate(passage_idx = depth) 
+  
+  # Attach Observed Growth
+  growth_df$obs_g <- sapply(growth_df$passage_id, function(pid) {
+    val <- fit_data[[pid]]$g
+    if (is.null(val) || length(val) == 0 || !is.finite(val)) return(NA_real_)
+    as.numeric(val)
+  })
+  
+  # --- B. Process Ploidy Distributions ---
+  
+  # 1. Extract Observed Data 
+  obs_ploidy_list <- lapply(growth_df$passage_id, function(pid) {
+    k <- fit_data[[pid]]$kary
+    if (is.null(k)) return(NULL)
+    k <- k[is.finite(k)]
+    if (length(k) == 0) return(NULL)
+    
+    # Bin observed data
+    kb <- round(k * N_unit) / N_unit
+    tab <- as.data.frame(table(kb), stringsAsFactors = FALSE)
+    colnames(tab) <- c("kary_bin", "n")
+    
+    data.frame(
+      passage_id = pid,
+      kary_bin   = as.numeric(as.character(tab$kary_bin)),
+      obs_frac   = tab$n / sum(tab$n),
+      stringsAsFactors = FALSE
+    )
+  })
+  obs_ploidy <- do.call(rbind, obs_ploidy_list)
+  
+  # 2. Extract Predicted Data (Only for IDs present in Obs)
+  if (!is.null(obs_ploidy)) {
+    ids_with_data <- unique(obs_ploidy$passage_id)
+    
+    pred_ploidy_list <- lapply(seq_len(nrow(growth_df)), function(i) {
+      pid <- growth_df$passage_id[i]
+      if (!pid %in% ids_with_data) return(NULL) 
+      
+      key <- growth_df$sim_key[i]
+      if (is.null(states[[key]])) return(NULL)
+      
+      dist <- states[[key]]$distribution
+      
+      data.frame(
+        passage_id = pid,
+        oxygen     = growth_df$oxygen[i],
+        depth      = growth_df$depth[i],
+        kary_bin   = dist$N / N_unit,
+        pred_frac  = dist$fraction,
+        stringsAsFactors = FALSE
+      )
+    })
+    pred_ploidy <- do.call(rbind, pred_ploidy_list)
+  } else {
+    pred_ploidy <- NULL
+  }
+  
+  list(
+    growth = growth_df, 
+    obs_ploidy = obs_ploidy, 
+    pred_ploidy = pred_ploidy
+  )
+}
+
+# ============================================================
+# 2. PLOTTING FUNCTIONS (FIXED)
+# ============================================================
+
+plot_growth_fit <- function(viz_data) {
+  df <- viz_data$growth
+  
+  # --- FIX: Deduplicate Simulation Topology ---
+  # We need unique nodes to draw the lines correctly.
+  # Otherwise, if Sim A has 2 data points, we draw multiple lines for it.
+  sim_nodes <- df %>% 
+    distinct(sim_key, .keep_all = TRUE) %>% 
+    select(sim_key, parent_key, passage_idx, pred_g, oxygen)
+  
+  # Build Edges: Join Child Nodes to Parent Nodes
+  # This avoids the many-to-many warning
+  sim_edges <- sim_nodes %>% 
+    inner_join(sim_nodes, by = c("parent_key" = "sim_key"), suffix = c("", "_parent")) %>% 
+    filter(!is.na(pred_g), !is.na(pred_g_parent))
+  
+  # --- Plotting ---
+  ggplot() +
+    # 1. Trajectories (Segments): Use unique edges
+    geom_segment(data = sim_edges, 
+                 aes(x = passage_idx_parent, y = pred_g_parent, 
+                     xend = passage_idx, yend = pred_g,
+                     color = factor(oxygen)), 
+                 alpha = 0.6, linewidth = 0.8) +
+    
+    # 2. Model Points: Use unique nodes
+    geom_point(data = sim_nodes, 
+               aes(x = passage_idx, y = pred_g, 
+                   color = factor(oxygen), shape = "Model"), 
+               size = 2) +
+    
+    # 3. Observed Points: Use full dataframe (filter NAs to silence warnings)
+    geom_point(data = df %>% filter(!is.na(obs_g)), 
+               aes(x = passage_idx, y = obs_g, 
+                   color = factor(oxygen), shape = "Observed"), 
+               size = 3, alpha = 0.8) +
+    
+    # Aesthetics
+    scale_color_viridis_d(name = "Oxygen (%)", option = "C", end = 0.9) +
+    scale_shape_manual(name = "Data Source", values = c("Model" = 16, "Observed" = 4)) +
+    
+    labs(title = "Growth Rate Trajectories",
+         subtitle = "Lines connect Model Parent -> Child",
+         x = "Passage Index (Depth)", 
+         y = "Growth Rate (1/day)") +
+    
+    theme_bw() +
+    theme(legend.position = "bottom")
+}
+
+plot_ploidy_fit <- function(viz_data) {
+  obs <- viz_data$obs_ploidy
+  pred <- viz_data$pred_ploidy
+  
+  if (is.null(obs) || nrow(obs) == 0) {
+    return(ggplot() + theme_void() + labs(title = "No Karyotype Data to Plot"))
+  }
+  
+  # Clean Facet Labels
+  meta <- viz_data$growth %>% 
+    select(passage_id, oxygen, depth) %>% 
+    distinct()
+  
+  obs <- obs %>% left_join(meta, by = "passage_id")
+  obs$label <- paste0("O2: ", obs$oxygen, "% | P", obs$depth, "\n(", obs$passage_id, ")")
+  
+  pred <- pred %>% 
+    left_join(obs %>% select(passage_id, label) %>% distinct(), by = "passage_id")
+
+  ggplot() +
+    # Observed (Bars)
+    geom_col(data = obs, aes(x = kary_bin, y = obs_frac, fill = "Observed"), 
+             alpha = 0.5, width = 0.08, position = "identity") +
+    # Predicted (Line)
+    geom_line(data = pred, aes(x = kary_bin, y = pred_frac, color = "Model"), 
+              linewidth = 1) +
+    
+    facet_wrap(~label, scales = "free_y") +
+    
+    scale_fill_manual(name = "", values = c("Observed" = "black")) +
+    scale_color_manual(name = "", values = c("Model" = "firebrick")) +
+    
+    labs(title = "Ploidy Distribution Fits",
+         x = "Ploidy (N / Haploid)", 
+         y = "Fraction") +
+    theme_bw() +
+    theme(strip.background = element_rect(fill = "#f0f0f0"))
+}
+
+theta <- list(
+  p_misseg = 2.369194e-02,
+  p_wgd    = 9.824223e-02,
+  beta     = 8.800753e-07,
+  n_exp    = 3.634542e+00,
+  smax     = 6.719432e-01,
+  k_o      = 1.119845e+02,
+  lam_max  = 3.334866e+00,
+  lam_min = 1.345119e-04# ~0.6931 / day  (≈1-day doubling)
+)
+
+
+ out <- run_sim_jobs_in_memory(log(unlist(theta)), jobs_2N, fit_data, keep_states=TRUE,parnames=names(theta))
+ states <- out$states
+
+# 2) build viz data
+ viz <- build_fit_viz_data(states, jobs_2N, fit_data, N_unit = 22L)
+
+# 3) plots
+ p_ploidy <- plot_ploidy_fit(viz)
+ p_growth <- plot_growth_fit(viz)
+```
+
+
 
 ```{r}
 library(dplyr)
@@ -520,16 +791,9 @@ plot_growth_fit <- function(pm) {
 # =========================
 # Usage
 # =========================
-# 1) run with keep_states=TRUE so we have distributions for plotting
- out <- run_sim_jobs_in_memory(log(unlist(theta)), jobs_2N, fit_data, keep_states=TRUE,parnames=names(theta))
- states <- out$states
 
-# 2) build viz data
- viz <- build_fit_viz_data(states, jobs_2N, fit_data, N_unit = 22L)
 
-# 3) plots
- p_ploidy <- plot_ploidy_fit(viz$pred_ploidy, viz$obs_ploidy)
- p_growth <- plot_growth_fit(viz$pm)
+
 # p_ploidy
 # p_growth
 
