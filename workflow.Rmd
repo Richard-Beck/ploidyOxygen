@@ -5,7 +5,7 @@ date: "2025-08-18"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_knit$set(root.dir = "C:/Users/4473331/Documents/projects/021_ltee_models/ploidyOxygen/")
+knitr::opts_knit$set(root.dir = "~/projects/ploidyOxygen/")
 ```
 
 ```{r}
@@ -273,184 +273,33 @@ jobs_4N <- get_sim_jobs(lineage_df, "4N")
 saveRDS(jobs_4N,"data/fit_objects/jobs_4N.Rds")
 ```
 
-
 ```{r}
-
-
-run_sim_jobs_in_memory <- function(theta, sim_jobs, fit_data, parnames,
-                                   start_N = 44L,
-                                   grid = list(N_min = 22L, N_max = 200L, N_unit = 22L),
-                                   stop_at = list(time = 60, size = 64),
-                                   sd_g = 0.15,
-                                   keep_states = FALSE,
-                                   eps = 1e-16) {
-  
-  # --- Likelihood Helpers ---
-  ll_g <- function(g_obs, g_model, sd_g) {
-    if (is.null(g_obs) || length(g_obs) == 0L) return(0)
-    if (!is.finite(g_obs)) return(0)
-    dnorm(g_obs, mean = g_model, sd = sd_g, log = TRUE)
-  }
-  
-  ll_kary <- function(kary_obs, dist_df, N_unit, eps) {
-    if (is.null(kary_obs) || length(kary_obs) == 0L) return(0)
-    kary_obs <- kary_obs[is.finite(kary_obs)]
-    if (!length(kary_obs)) return(0)
-    
-    p_by_N <- dist_df$fraction
-    names(p_by_N) <- as.character(dist_df$N)
-    
-    N_hat <- as.integer(round(kary_obs * N_unit))
-    N_hat <- pmax(min(dist_df$N), pmin(max(dist_df$N), N_hat)) # clamp
-    sum(log(p_by_N[as.character(N_hat)] + eps))
-  }
-  
-  ll_flow <- function(flow_obs, model_res) 0
-  
-  ll_one_id <- function(dat, model_res) {
-    ll_g(dat$g, model_res$growth_rate, sd_g) +
-      ll_flow(dat$flow, model_res) +
-      ll_kary(dat$kary, model_res$distribution, grid$N_unit, eps)
-  }
-  
-  # --- 1. Parameter Transformation ---
-  theta_vals <- exp(theta)
-  theta_list <- as.list(theta_vals)
-  names(theta_list) <- parnames
-  
-  # --- 2. PRE-CALCULATION CACHE ---
-  # Identify all unique oxygen levels in the job list
-  unique_O <- unique(sim_jobs$oxygen)
-  system_cache <- vector("list", length(unique_O))
-  names(system_cache) <- as.character(unique_O)
-  
-  # Loop once per unique condition to build Q matrices
-  for(o_lvl in unique_O) {
-    # Build Physics
-    sys <- build_transition_matrix(o_lvl, theta_list, grid)
-    
-    # Pre-calculate Rate Matrix Q = lambda * (B - I)
-    I_mat <- diag(nrow(sys$B))
-    Q_mat <- sys$lambda * (sys$B - I_mat)
-    
-    # Store minimal needed data for run_ploidy_model
-    system_cache[[as.character(o_lvl)]] <- list(
-      Q = Q_mat,
-      grid = sys$grid,
-      lambda = sys$lambda,
-      B = sys$B # Keep B if we ever need to fallback to desolve
-    )
-  }
-  
-  # --- 3. Simulation Loop ---
-  states <- if (keep_states) vector("list", nrow(sim_jobs)) else NULL
-  if (keep_states) names(states) <- sim_jobs$sim_key
-  
-  ll_by_job <- numeric(nrow(sim_jobs))
-  names(ll_by_job) <- sim_jobs$sim_key
-  ll_total <- 0
-  
-  # Cache only u_vec for parents when not keeping full states
-  u_cache <- if (!keep_states) vector("list", nrow(sim_jobs)) else NULL
-  if (!keep_states) names(u_cache) <- sim_jobs$sim_key
-  
-  for (i in seq_len(nrow(sim_jobs))) {
-    job <- sim_jobs[i, ]
-    sim_key    <- job$sim_key
-    parent_key <- job$parent_key
-    O          <- job$oxygen
-    
-    # Retrieve Pre-built System
-    cached_sys <- system_cache[[as.character(O)]]
-    
-    start_u <- NULL
-    if (!is.na(parent_key)) {
-      if (keep_states) {
-        if (is.null(states[[parent_key]])) stop("Parent state not available: ", parent_key)
-        start_u <- states[[parent_key]]$u_vec
-      } else {
-        if (is.null(u_cache[[parent_key]])) stop("Parent state not available: ", parent_key)
-        start_u <- u_cache[[parent_key]]
-      }
-    }
-    
-    # Pass 'cached_sys' to skip rebuilding matrix
-res <- tryCatch({
-      run_ploidy_model(
-        O = O, theta = theta_list,
-        start_N = start_N,
-        start_u = start_u,
-        grid = grid,
-        stop_at = stop_at,
-        method = "expm",
-        cached_system = cached_sys
-      )
-    }, error = function(e) {
-      # Optional: Print error to see what happened (uncomment if debugging)
-      # message(sprintf("Job %s failed: %s", sim_key, e$message))
-      return(NULL) # Sentinel for failure
-    })
-
-    # If simulation crashed, abort immediately and return huge penalty
-    if (is.null(res)) {
-      return(1e12) # Large positive value (since we minimize negative LL)
-    }
-    
-    # Score Data
-    ids <- job$data_ids[[1]]
-    ll_i <- 0
-    for (pid in ids) {
-      dat <- fit_data[[pid]]
-      ll_i <- ll_i + ll_one_id(dat, res)
-    }
-    
-    ll_by_job[i] <- ll_i
-    ll_total <- ll_total + ll_i
-    
-    if (keep_states) {
-      states[[sim_key]] <- res
-    } else {
-      u_cache[[sim_key]] <- res$u_vec
-    }
-  }
-  
-  out <- -ll_total
-  
-  # Optional: Print for monitoring
-   print(unlist(theta_list))
-   print(out)
-  
-  if (keep_states) {
-    out <- list(ll = ll_total, ll_by_job = ll_by_job)
-    attr(states, "data_ids") <- setNames(sim_jobs$data_ids, sim_jobs$sim_key)
-    out$states <- states
-  }
-  out
-}
-
-
-source("models/buffering.R")
-
 theta <- list(
-  p_misseg = 0.003,
-  p_wgd    = 1e-4,
-  beta     = 0.8,
-  n_exp    = 2,
-  smax     = 0.9,
-  k_o      = 2.5,
-  lam_max  = log(2)/1,
-  lam_min = 0.1# ~0.6931 / day  (≈1-day doubling)
-)
+  p_misseg = 0.03,
+  p_wgd    = 0.00001,
+  beta     = 2,
+  n_exp    = 10,
+  smax     = 1,
+  k_o      = 3.670835e+00,
+  k_o_mis  = .1,
+  lam_max  = 1.138527e+00,
+  lam_min  = 4.822470e-01,
+  mu_2N    = 4.134470e+01,
+  sd_2N    = 1.410775e+00,
+  mu_4N    = 5.569906e+01,
+  sd_4N    = 1.630977e+01
+  )
 
+times <- seq(0,100,length.out=5)
+plot_ploidy_dashboard(22.5,theta,88,times=times)
+times <- seq(0,100,length.out=5)
+plot_ploidy_dashboard(0.01,theta,88,times=times)
 
-fit_data <- readRDS("data/fit_objects/fit_data.Rds")
-jobs_2N <- readRDS("data/fit_objects/jobs_2N.Rds")
-#states_2N <- run_sim_jobs_in_memory(theta, jobs_2N, fit_data = fit_data)
-
-res <- optim(log(unlist(theta)),run_sim_jobs_in_memory,sim_jobs=jobs_2N, fit_data = fit_data,parnames=names(theta))
 
 
 ```
+
+
 
 ```{r}
 library(dplyr)
@@ -650,19 +499,84 @@ plot_ploidy_fit <- function(viz_data) {
     theme(strip.background = element_rect(fill = "#f0f0f0"))
 }
 
-theta <- list(
-  p_misseg = 2.369194e-02,
-  p_wgd    = 9.824223e-02,
-  beta     = 8.800753e-07,
-  n_exp    = 3.634542e+00,
-  smax     = 6.719432e-01,
-  k_o      = 1.119845e+02,
-  lam_max  = 3.334866e+00,
-  lam_min = 1.345119e-04# ~0.6931 / day  (≈1-day doubling)
+get_oxygen_functions <- function(theta) {
+  
+  # Missegregation rate: Scales down as Oxygen increases (Hill function logic)
+  # Derived from: p_misseg_adj <- theta$p_misseg * (1 - (O / (O + theta$k_o)))
+  f_misseg <- function(O) {
+    theta$p_misseg * (1 - (O / (O + theta$k_o)))
+  }
+  
+  # Fitness (Growth Rate): Scales up as Oxygen increases (Monod/Michaelis-Menten)
+  # Derived from: lambda_val <- theta$lam_min + (theta$lam_max - theta$lam_min) * (O / (O + theta$k_o))
+  f_fitness <- function(O) {
+    theta$lam_min + (theta$lam_max - theta$lam_min) * (O / (O + theta$k_o))
+  }
+  
+  list(missegregation = f_misseg, fitness = f_fitness)
+}
+
+plot_sN_shape <- function(theta, N_unit=22, N_range=22:100) {
+  # The function from models/buffering.R
+  # Note: your snippet missed the '^n' part, which is in the file
+  sN <- theta$smax * exp(-theta$beta * ((2 * N_unit) / N_range)^theta$n_exp)
+  
+  plot(N_range, sN, type="l", lwd=2, col="blue",
+       main = "Survival per Missegregation (sN) vs Ploidy",
+       xlab = "Ploidy (N)", ylab = "Survival Probability (sN)",
+       ylim = c(0, theta$smax))
+  grid()
+  abline(h = theta$smax, col="red", lty=2, label="smax")
+}
+```
+
+```{r}
+fit_dir <- "data/fits/buffering/"
+
+ff <- list.files(fit_dir,full.names = T)
+df <- do.call(rbind,lapply(ff,read.csv))
+
+best <- df[which.min(df$nll),]
+
+theta <- head(c(best),-4)
+
+plot_sN_shape(theta,N_range = 22:128)
+
+funcs <- get_oxygen_functions(theta)
+
+# Test across a range of Oxygen (0% to 21%)
+O_vals <- seq(0, 21, length.out = 100)
+
+plot(O_vals, funcs$fitness(O_vals), type='l', main="Fitness vs Oxygen", ylab="Growth Rate", xlab="O2 %")
+plot(O_vals, funcs$missegregation(O_vals), type='l', main="Missegregation vs Oxygen", ylab="Prob. Misseg", xlab="O2 %")
+
+
+fit_data <- readRDS("data/fit_objects/fit_data.Rds")
+
+#fit_data[["SUM-159_NLS_2N_C_A12_seed"]]$kary <- fit_data[[1]]$kary
+
+jobs_2N <- readRDS("data/fit_objects/jobs_2N.Rds")
+jobs_4N <- readRDS("data/fit_objects/jobs_4N.Rds")
+
+# 1. Update Jobs DataFrame
+# Assign specific parameter names to root jobs.
+# Example: 2N jobs use 'mu_2N', 4N jobs use 'mu_4N'
+jobs_2N$start_mean_par <- ifelse(is.na(jobs_2N$parent_key), "mu_2N", NA)
+jobs_2N$start_sd_par   <- ifelse(is.na(jobs_2N$parent_key), "sd_2N", NA)
+
+jobs_4N$start_mean_par <- ifelse(is.na(jobs_4N$parent_key), "mu_4N", NA)
+jobs_4N$start_sd_par   <- ifelse(is.na(jobs_4N$parent_key), "sd_4N", NA)
+
+jobs <- rbind(jobs_2N, jobs_4N)
+jobs <- jobs[order(jobs$depth), ]
+
+
+sim_config <- create_sim_config(
+  sim_jobs = jobs_2N, 
+  fit_data = fit_data
+  # You can override defaults here: grid = list(...), etc.
 )
-
-
- out <- run_sim_jobs_in_memory(log(unlist(theta)), jobs_2N, fit_data, keep_states=TRUE,parnames=names(theta))
+ out <- run_sim_jobs_in_memory(log(unlist(theta)), config = sim_config,keep_states = T)
  states <- out$states
 
 # 2) build viz data
@@ -671,6 +585,9 @@ theta <- list(
 # 3) plots
  p_ploidy <- plot_ploidy_fit(viz)
  p_growth <- plot_growth_fit(viz)
+ 
+ p_growth
+ p_ploidy
 ```
 
 

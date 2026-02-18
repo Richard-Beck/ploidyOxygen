@@ -15,8 +15,19 @@ build_transition_matrix <- function(O, theta, grid) {
   N_GRID <- grid$N_min:grid$N_max
   
   # --- Fitness & Parameters ---
+  
+  # 1. Define a scaling factor (e.g., gamma = 0.33 for SA:V scaling)
+  #scaling_factor <- (N_GRID / (2*grid$N_unit))^0.33 
+  
+  # 2. Scale the Half-Saturation Constant (k_o)
+  # Larger cells (higher N) have higher k_o (worse affinity)
+  #k_o_adjusted <- theta$k_o * scaling_factor
+  
+  # 3. Calculate Lambda as a Vector (one rate per ploidy)
+  #lambda_val <- theta$lam_min + (theta$lam_max - theta$lam_min) * (O / (O + k_o_adjusted))
+  
   lambda_val <- theta$lam_min + (theta$lam_max - theta$lam_min) * (O / (O + theta$k_o))
-  p_misseg_adj <- theta$p_misseg * (1 - (O / (O + theta$k_o)))
+  p_misseg_adj <- theta$p_misseg * (1 - (O / (O + theta$k_o_mis)))
   
   # --- Internal Helper: Delta Weights ---
   .get_delta_weights <- function(N, p, b, n, sm, k_unit) {
