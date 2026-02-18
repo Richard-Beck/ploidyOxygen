@@ -273,13 +273,15 @@ jobs_4N <- get_sim_jobs(lineage_df, "4N")
 saveRDS(jobs_4N,"data/fit_objects/jobs_4N.Rds")
 ```
 
+
+Demonstration that buffering model can qualitatively capture the data:
 ```{r}
 theta <- list(
-  p_misseg = 0.03,
+  p_misseg = 0.01,
   p_wgd    = 0.00001,
-  beta     = 2,
+  beta     = 2.5,
   n_exp    = 10,
-  smax     = 1,
+  smax     = .8,
   k_o      = 3.670835e+00,
   k_o_mis  = .1,
   lam_max  = 1.138527e+00,
@@ -290,10 +292,20 @@ theta <- list(
   sd_4N    = 1.630977e+01
   )
 
-times <- seq(0,100,length.out=5)
+
+#times <- seq(0,100,length.out=5)
+#plot_ploidy_dashboard(22.5,theta,88,times=times)
+times <- seq(1,501,length.out=5)
+plot_ploidy_dashboard(0.0,theta,88,times=times)
+
+times <- seq(1,100,length.out=5)
+plot_ploidy_dashboard(0.0,theta,44,times=times)
+
+times <- seq(0,500,length.out=5)
 plot_ploidy_dashboard(22.5,theta,88,times=times)
-times <- seq(0,100,length.out=5)
-plot_ploidy_dashboard(0.01,theta,88,times=times)
+
+times <- seq(0,500,length.out=5)
+plot_ploidy_dashboard(22.5,theta,44,times=times)
 
 
 
