@@ -50,14 +50,14 @@ get_karyotyping <- function(cloneIds){
   
   kvecs <- lapply(res$profile, function(p) {
     raw_vec <- p
-    readBin(raw_vec, what = "double", n = length(raw_vec) / 8, endian = "big")
+    head(readBin(raw_vec, what = "double", n = length(raw_vec) / 8, endian = "big"),22) ## autosomes only
   })
   
   df <- tibble::tibble(
     id = res$origin,
     karyotype = kvecs
   )
-  df
+  head(df,-1) ## last row is an aggregate
 }
 
 recover_lineage <- function(row, data) {
