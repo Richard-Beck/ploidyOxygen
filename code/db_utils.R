@@ -87,9 +87,23 @@ recover_lineage <- function(row, data) {
     dfi$num_date <- dfi$num_date - min(dfi$num_date)
     dfi$intercept <- NaN
     dfi$g <- NaN
+    dfi$passage_duration <- NA_real_
+    dfi$initial_cells <- NA_real_
+    dfi$final_cells <- NA_real_
     if (nrow(dfi) < 2) return(dfi)
-    if(sum(!is.na(dfi$correctedCount))<2) return(dfi)
-    fit <- lm(log(pmax(1, dfi$correctedCount)) ~ dfi$num_date)
+
+    valid <- !is.na(dfi$correctedCount) & !is.na(dfi$date)
+    if(sum(valid) < 2) return(dfi)
+
+    valid_idx <- which(valid)
+    ord <- order(dfi$date[valid_idx], dfi$event[valid_idx], na.last = TRUE)
+    ordered_idx <- valid_idx[ord]
+
+    dfi$passage_duration <- as.numeric(max(dfi$date[ordered_idx]) - min(dfi$date[ordered_idx]))
+    dfi$initial_cells <- dfi$correctedCount[ordered_idx[1]]
+    dfi$final_cells <- dfi$correctedCount[ordered_idx[length(ordered_idx)]]
+
+    fit <- lm(log(pmax(1, dfi$correctedCount[valid])) ~ dfi$num_date[valid])
     dfi$intercept <- exp(coef(fit)[1])
     dfi$g <- coef(fit)[2]
     dfi

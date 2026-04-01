@@ -70,10 +70,17 @@ gaps_4N <- fill_lineage_gaps("_4N_",df,x)
 
 gaps_df <- rbind(gaps_2N,gaps_4N)
 gaps_df$g <- NaN
+gaps_df$passage_duration <- NA_real_
+gaps_df$initial_cells <- NA_real_
+gaps_df$final_cells <- NA_real_
 gaps_df$sublabel_value <- "linker"
 gaps_df$adjPass <- NaN
-lineage_df <- rbind(df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g","sublabel_value","media")],
-                    gaps_df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g","sublabel_value","media")])
+lineage_df <- rbind(
+  df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g",
+        "passage_duration","initial_cells","final_cells","sublabel_value","media")],
+  gaps_df[,c("id","passaged_from_id1","passage","adjPass","event","label_value","g",
+             "passage_duration","initial_cells","final_cells","sublabel_value","media")]
+)
 
 lineage_df$imaged <- lineage_df$id%in%df$id
 lineage_df$karyotyped <- lineage_df$id%in%cloneIds
@@ -207,6 +214,9 @@ g$karyotyped <- g$passage_id%in%names(karyotyped_ids)
 
 fit_data <- lapply(1:nrow(g),function(i){
   gr <- g$g[i]
+  passage_duration <- g$passage_duration[i]
+  initial_cells <- g$initial_cells[i]
+  final_cells <- g$final_cells[i]
   flow <- NULL
   if(g$has_flow[i]){
     ix <- which(sapply(names(binned_list),function(j) grepl(j,g$passage_id[i])))
@@ -219,7 +229,14 @@ fit_data <- lapply(1:nrow(g),function(i){
     kary <- rowMeans(samples)
   }
   
-  list(g=gr,flow=flow,kary=kary)
+  list(
+    g=gr,
+    passage_duration=passage_duration,
+    initial_cells=initial_cells,
+    final_cells=final_cells,
+    flow=flow,
+    kary=kary
+  )
 })
 
 names(fit_data) <- g$passage_id
