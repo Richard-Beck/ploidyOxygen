@@ -87,7 +87,7 @@ experiment_lineage_plot <- function(lineage_df_subset){
     scale_color_viridis_c("growth\nrate",na.value = "grey70",trans="log") +
     theme_void()+
     scale_shape_discrete("")+
-    ggtitle(paste("Hypoxia experiment data:",unique(lineage_df_subset$label_value)))
+    ggtitle(paste(unique(lineage_df_subset$label_value), "lineage overview"))
   return(p)
 }
 
@@ -123,7 +123,7 @@ plot_ploidy_dashboard <- function(O, theta, start_N, times,
   p1 <- ggplot(df_viability, aes(x = N, y = Survival)) +
     geom_line(color = "#2c3e50", size = 1.2) +
     geom_vline(xintercept = start_N, linetype = "dashed", color = "red", alpha = 0.5) +
-    labs(title = "1. Viability vs Ploidy", y = "Viability (s)", x = "Ploidy (N)") +
+    labs(title = "Viability", y = "Viability (s)", x = "Ploidy (N)") +
     theme_minimal(base_size = 10)
   
   # --- Plot 2: Missegregation Rate vs Oxygen ---
@@ -138,13 +138,10 @@ plot_ploidy_dashboard <- function(O, theta, start_N, times,
     geom_point(aes(x = O, y = theta$p_misseg * (1 - (O / (O + theta$k_o_mis)))), 
                color = "red", size = 3) +
     geom_vline(xintercept = O, linetype = "dotted", color = "red") +
-    labs(title = "2. Missegregation vs O2", y = "Prob(Misseg)", x = "Oxygen (%)") +
+    labs(title = "Missegregation", y = "Prob(Misseg)", x = "Oxygen (%)") +
     theme_minimal(base_size = 10)
   
-  # --- Plot 3: Cycle Rate (Lambda) vs Oxygen (NEW) ---
-  # Func: lam_min + (lam_max - lam_min) * (O / (O + k_o))
-  lambda_seq <- theta$lam_min + (theta$lam_max - theta$theta_min) * (O_seq / (O_seq + theta$k_o))
-  # Note: Handle case where theta_min might be named differently or just subtract
+  # --- Plot 3: Cycle Rate (Lambda) vs Oxygen ---
   lambda_diff <- theta$lam_max - theta$lam_min
   lambda_seq <- theta$lam_min + lambda_diff * (O_seq / (O_seq + theta$k_o))
   
@@ -156,7 +153,7 @@ plot_ploidy_dashboard <- function(O, theta, start_N, times,
     geom_line(color = "#8e44ad", size = 1.2) +
     geom_point(aes(x = O, y = current_lambda), color = "red", size = 3) +
     geom_vline(xintercept = O, linetype = "dotted", color = "red") +
-    labs(title = "3. Cycle Rate (Lambda) vs O2", y = "Rate (1/hr)", x = "Oxygen (%)") +
+    labs(title = "Cycle rate", y = "Rate (1/hr)", x = "Oxygen (%)") +
     theme_minimal(base_size = 10)
   
   # =========================================================
@@ -221,7 +218,7 @@ plot_ploidy_dashboard <- function(O, theta, start_N, times,
   p4 <- ggplot(df_growth, aes(x = Time, y = Rate)) +
     geom_line(color = "#27ae60", size = 1) +
     geom_point(data = df_growth[df_growth$Time %in% times, ], color = "black", size = 2) +
-    labs(title = "4. Pop. Growth Rate (History)", y = "d(ln N)/dt", x = "Time") +
+    labs(title = "Net growth", y = "d(ln N)/dt", x = "Time") +
     theme_minimal(base_size = 10)
   
   # --- Plot 5: Distributions (LARGE COLUMN) ---
@@ -248,7 +245,7 @@ plot_ploidy_dashboard <- function(O, theta, start_N, times,
   p5 <- ggplot(df_dists, aes(x = N, y = Frequency, fill = Time)) +
     geom_area(alpha = 0.4, position = "identity") +
     geom_line(aes(color = Time), size = 1) +
-    labs(title = "5. Ploidy Distribution Evolution", x = "Ploidy (N)", y = "Frequency") +
+    labs(title = "Ploidy distribution", x = "Ploidy (N)", y = "Frequency") +
     theme_minimal(base_size = 14) +
     theme(legend.position = "top", 
           legend.text = element_text(size=12))+
@@ -271,5 +268,5 @@ plot_ploidy_dashboard <- function(O, theta, start_N, times,
   )
   
   grid.arrange(p1, p2, p3, p4, p5, layout_matrix = layout_matrix,
-               widths = c(1, 1, 2))
+               widths = c(1, 1, 2.6))
 }
