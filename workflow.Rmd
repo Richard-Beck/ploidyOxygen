@@ -28,7 +28,7 @@ cloneIds <- c(
   "SUM159_NLS_2N_O1_A7K_harvest", "SUM159_NLS_2N_O2_A7K_harvest", "SUM-159_NLS_2N_A7M_K_harvest",
   "SUM-159_NLS_4N_O2_A17_seedT1", "SUM159_NLS_4N_O2_A7K_harvest", "SUM159_NLS_4N_O1_A7K_harvest",
   "SUM-159_NLS_4N_A5M_K_harvest", "SUM-159_NLS_4N_O1_A17_seedT1", "SUM-159_NLS_2N_O2_A19_seed",
-  "SUM-159_NLS_2N_O1_A19_seed", "SUM-159_NLS_2N_MRCA_harvest"
+  "SUM-159_NLS_2N_O1_A19_seed", "SUM-159_NLS_2N_MRCA_harvest", "SUM-159_NLS_4N_MRCA_harvest"
 )
 
 trim_passaging_for_workflow <- function(passaging, clone_ids, filters) {
@@ -112,6 +112,7 @@ save_workflow_inputs <- function(input_file = inputs_path, clone_ids = cloneIds,
   passaging <- dbGetQuery(db, "SELECT * FROM Passaging")
   media <- dbGetQuery(db, "SELECT * FROM Media")
   karyotypes <- get_karyotyping(clone_ids)
+  print(nrow(karyotypes))
   config <- jsonlite::fromJSON("data/parametersO2.json", flatten = FALSE, simplifyVector = FALSE)
   filters <- config$filters[[1]]$ranges
 
@@ -312,7 +313,8 @@ fit_data <- lapply(seq_len(nrow(g)), function(i) {
   if (g$karyotyped[i]) {
     mapped_id <- karyotyped_ids[g$passage_id[i]]
     samples <- do.call(rbind, karyotypes$karyotype[karyotypes$passage_id == mapped_id])
-    kary <- rowMeans(samples)
+    keep_loci <- !grepl("^9999:", colnames(samples))
+    kary <- rowSums(samples[, keep_loci, drop = FALSE])
   }
 
   list(

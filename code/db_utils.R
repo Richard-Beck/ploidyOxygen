@@ -28,12 +28,22 @@ load_db_vars <- function(filepath) {
   return(vars)
 }
 
+decode_profile_blob <- function(raw_blob) {
+  readBin(raw_blob, what = "double", n = length(raw_blob) %/% 8, size = 8, endian = "big")
+}
+
+decode_loci_blob <- function(raw_blob) {
+  ints <- readBin(raw_blob, what = "integer", n = length(raw_blob) %/% 2, size = 2, signed = FALSE, endian = "big")
+  txt <- intToUtf8(ints)
+  trimws(strsplit(txt, "\n", fixed = TRUE)[[1]])
+}
+
 get_karyotyping <- function(cloneIds){
   require(DBI)
   require(RMariaDB)
   dbvars <- load_db_vars("db_creds.txt")
   db <- dbConnect(
-    MariaDB(),
+    RMariaDB::MariaDB(),
     host = dbvars["HOST"],
     user = dbvars["USER"],
     password = dbvars["PASSWORD"],
@@ -45,19 +55,28 @@ get_karyotyping <- function(cloneIds){
   
   rs <- dbSendQuery(db, q)
   res <- dbFetch(rs)
+  root <- subset(res, is.na(parent))
+  res <- res[res$parent %in% root$cloneID & !is.na(res$parent),] ##IDK how robust this is
   dbClearResult(rs) 
-  dbDisconnect(db)
   
-  kvecs <- lapply(res$profile, function(p) {
-    raw_vec <- p
-    head(readBin(raw_vec, what = "double", n = length(raw_vec) / 8, endian = "big"),22) ## autosomes only
+  loci_id <- unique(res$profile_loci)
+  if(length(loci_id)>1) stop("this workflow expects identical loci across clones!")
+  loci_blob <- DBI::dbGetQuery(db, paste0("SELECT content FROM Loci WHERE id=", loci_id))$content[[1]]
+  loci <- decode_loci_blob(loci_blob)
+  
+  
+  kvecs <- lapply(res$profile, function(i){
+    ki <- decode_profile_blob(i)
+    names(ki) <- loci
+    ki
   })
+  
+  dbDisconnect(db)
   
   df <- tibble::tibble(
     id = res$origin,
     karyotype = kvecs
   )
-  head(df,-1) ## last row is an aggregate
 }
 
 recover_lineage <- function(row, data) {
